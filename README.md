@@ -70,6 +70,13 @@ Or, you can only embed the codebase with the following command:
 deepwiki repo_path=/path/to/repository
 ```
 
+**Important Note**: If you want to exclude additional folders from the embedding process, avoid specifying them directly like `repo.file_filters.extra_excluded_patterns=["reply/"]`. 
+Shell quoting may cause Hydra to not recognize this pattern correctly. Instead, use the following format:
+
+```bash
+deepwiki repo_path=/path/to/repository question="What does this project do?" 'repo.file_filters.extra_excluded_patterns=[pattern1, pattern2]'
+```
+
 ### As a Python Library
 
 ```python

@@ -754,10 +754,6 @@ class CodeSplitter(TextSplitter):
             splits, chunk_size, chunk_overlap, separator
         )
 
-    def _extra_repr(self) -> str:
-        base_repr = super()._extra_repr()
-        return f"{base_repr}, smart_boundary_ratio={self.smart_boundary_ratio}"
-
     def split_text(self, text: str) -> List[str]:
         """
         Initialize parser

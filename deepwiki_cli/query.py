@@ -14,7 +14,7 @@ import hydra
 from deepwiki_cli.logger.logging_config import get_tqdm_compatible_logger
 from deepwiki_cli.rag.rag import RAG
 from deepwiki_cli.configs import *
-from deepwiki_cli.rag.dual_vector_pipeline import DualVectorDocument
+from deepwiki_cli.core.types import DualVectorDocument
 
 # Setup logging
 logger = get_tqdm_compatible_logger(__name__)

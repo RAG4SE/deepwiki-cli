@@ -9,6 +9,7 @@ from tqdm import tqdm
 from typing import Sequence
 import pickle
 
+import adalflow as adal
 from adalflow.core.types import Document
 from sentence_transformers import SentenceTransformer
 from adalflow.core.model_client import ModelClient
@@ -28,9 +29,6 @@ import adalflow.core.functional as F
 
 # Configure logging
 from deepwiki_cli.logger.logging_config import get_tqdm_compatible_logger
-
-# # Disable tqdm progress bars
-# os.environ["TQDM_DISABLE"] = "1"
 
 log = get_tqdm_compatible_logger(__name__)
 
@@ -308,7 +306,7 @@ ToEmbeddingsInputType = Sequence[Document]
 ToEmbeddingsOutputType = Sequence[Document]
 
 
-class HuggingfaceEmbedder(DataComponent):
+class HuggingfaceEmbedder(adal.Embedder):
     r"""
     A user-facing component that orchestrates an embedder model via the model client and output processors.
 
@@ -326,8 +324,6 @@ class HuggingfaceEmbedder(DataComponent):
     """
 
     model_type: ModelType = ModelType.EMBEDDER
-    model_client: ModelClient
-    output_processors: Optional[DataComponent]
 
     def __init__(
         self,
@@ -336,83 +332,11 @@ class HuggingfaceEmbedder(DataComponent):
         output_processors: Optional[DataComponent] = None,
     ) -> None:
 
-        super().__init__(model_kwargs=model_kwargs)
+        super().__init__(model_client=HuggingfaceClient(), model_kwargs=model_kwargs, output_processors=output_processors)
         if not isinstance(model_kwargs, Dict):
             raise TypeError(
                 f"{type(self).__name__} requires a dictionary for model_kwargs, not a string"
             )
-        self.model_kwargs = model_kwargs.copy()
-
-        self.model_client = HuggingfaceClient()
-        self.output_processors = output_processors
-
-    @classmethod
-    def from_config(cls, config: Dict[str, Any]) -> "HuggingfaceEmbedder":
-        """Create an HuggingfaceEmbedder from a configuration dictionary.
-
-        Example:
-
-        .. code-block:: python
-
-            embedder_config =  {
-                "model_client": {
-                    "component_name": "OpenAIClient",
-                    "component_config": {}
-                },
-                "model_kwargs": {
-                    "model": "text-embedding-3-small",
-                    "dimensions": 256,
-                    "encoding_format": "float"
-                }
-            }
-
-            embedder = HuggingfaceEmbedder.from_config(embedder_config)
-        """
-        if "model_client" not in config:
-            raise ValueError("model_client is required in the config")
-        return super().from_config(config)
-
-    def _compose_model_kwargs(self, **model_kwargs) -> Dict[str, object]:
-        r"""Add new arguments or overwrite existing arguments in the model_kwargs."""
-        return F.compose_model_kwargs(self.model_kwargs, model_kwargs)
-
-    def _pre_call(
-        self, input: EmbedderInputType, model_kwargs: Optional[Dict] = {}
-    ) -> Dict:
-        # step 1: combine the model_kwargs with the default model_kwargs
-        composed_model_kwargs = self._compose_model_kwargs(**model_kwargs)
-        # step 2: convert the input to the api_kwargs
-        api_kwargs = self.model_client.convert_inputs_to_api_kwargs(
-            input=input,
-            model_kwargs=composed_model_kwargs,
-            model_type=self.model_type,
-        )
-        log.debug(f"api_kwargs: {api_kwargs}")
-        return api_kwargs
-
-    def _post_call(self, response: Any) -> EmbedderOutputType:
-        r"""Get float list response and process it with output_processor"""
-        try:
-            embedding_output: EmbedderOutputType = (
-                self.model_client.parse_embedding_response(response)
-            )
-        except Exception as e:
-            log.error(f"Error parsing the embedding {response}: {e}")
-            raise
-        output: EmbedderOutputType = EmbedderOutputType(raw_response=embedding_output)
-        # data = embedding_output.data
-        if self.output_processors:
-            try:
-                embedding_output = self.output_processors(embedding_output)
-                output.data = embedding_output
-            except Exception as e:
-                log.error(f"Error processing the output: {e}")
-                output.error = str(e)
-                raise
-        else:
-            output.data = embedding_output.data
-
-        return output
 
     def call(
         self,
@@ -430,52 +354,16 @@ class HuggingfaceEmbedder(DataComponent):
             raise
         return output
 
-    async def acall(
-        self,
-        input: EmbedderInputType,
-        model_kwargs: Optional[Dict] = {},
-    ) -> EmbedderOutputType:
-        log.debug(f"Calling {self.__class__.__name__} with input: {input}")
-        api_kwargs = self._pre_call(input=input, model_kwargs=model_kwargs)
-        output: EmbedderOutputType = None
-        response = None
-        try:
-            response = await self.model_client.acall(
-                api_kwargs=api_kwargs, model_type=self.model_type
-            )
-        except Exception as e:
-            log.error(f"Error calling the model: {e}")
-            raise
-
-        if response:
-            try:
-                output = self._post_call(response)
-            except Exception as e:
-                log.error(f"🤡 Error processing output: {e}")
-                raise
-        # add back the input
-        output.input = [input] if isinstance(input, str) else input
-        log.debug(f"Output from {self.__class__.__name__}: {output}")
-        return output
-
-    def _extra_repr(self) -> str:
-        s = f"model_kwargs={self.model_kwargs}, "
-        return s
-
-
-class HuggingfaceClientBatchEmbedder(DataComponent):
+class HuggingfaceBatchEmbedder(adal.BatchEmbedder):
     __doc__ = r"""Adds batching to the embedder component.
 
     Args:
         embedder (HuggingfaceEmbedder): The embedder to use for batching.
         batch_size (int, optional): The batch size to use for batching. Defaults to 100.
-        embedding_cache_file_name (str, optional): Cache file naming. Defaults to "default".
     """
 
     def __init__(self, embedder: HuggingfaceEmbedder, batch_size: int = 500) -> None:
-        super().__init__(batch_size=batch_size)
-        self.embedder = embedder
-        self.batch_size = batch_size
+        super().__init__(embedder=embedder, batch_size=batch_size)
 
     def call(
         self, input: BatchEmbedderInputType, model_kwargs: Optional[Dict] = {}
@@ -505,35 +393,3 @@ class HuggingfaceClientBatchEmbedder(DataComponent):
             embeddings.append(batch_output)
 
         return embeddings
-
-
-class HuggingfaceClientToEmbeddings(DataComponent):
-    r"""It transforms a Sequence of Chunks or Documents to a List of Embeddings.
-
-    It operates on a copy of the input data, and does not modify the input data.
-    """
-
-    def __init__(self, embedder: HuggingfaceEmbedder, batch_size: int = 500) -> None:
-        super().__init__(batch_size=batch_size)
-        self.embedder = embedder
-        self.batch_size = batch_size
-        self.batch_embedder = HuggingfaceClientBatchEmbedder(
-            embedder=embedder, batch_size=batch_size
-        )
-
-    def __call__(self, input: ToEmbeddingsInputType) -> ToEmbeddingsOutputType:
-        output = deepcopy(input)
-        # convert documents to a list of strings
-        embedder_input: BatchEmbedderInputType = [chunk.text for chunk in output]
-        outputs: BatchEmbedderOutputType = self.batch_embedder(input=embedder_input)
-        # put them back to the original order along with its query
-        for batch_idx, batch_output in tqdm(
-            enumerate(outputs), desc="Adding embeddings to documents from batch"
-        ):
-            for idx, embedding in enumerate(batch_output.data):
-                output[batch_idx * self.batch_size + idx].vector = embedding.embedding
-        return output
-
-    def _extra_repr(self) -> str:
-        s = f"batch_size={self.batch_size}"
-        return s

@@ -8,9 +8,9 @@ from adalflow.core.types import Document
 
 from deepwiki_cli.configs import configs
 from deepwiki_cli.logger.logging_config import get_tqdm_compatible_logger
-from deepwiki_cli.rag.hybrid_retriever import HybridRetriever
+from deepwiki_cli.rag.retriever import HybridRetriever
 from deepwiki_cli.rag.data_pipeline import DatabaseManager
-from deepwiki_cli.rag.dual_vector import DualVectorDocument
+from deepwiki_cli.core.types import DualVectorDocument
 
 # Configure logging
 logger = get_tqdm_compatible_logger(__name__)

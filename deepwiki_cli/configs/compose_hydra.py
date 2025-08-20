@@ -4,17 +4,11 @@ Simple example of loading all YAML configurations from the configs folder using 
 This example works with the existing YAML files without requiring dataclass definitions.
 """
 
-import os
-from pathlib import Path
-from hydra import compose, initialize_config_dir, initialize
+from hydra import compose, initialize
 from omegaconf import DictConfig, OmegaConf
 
 #! Though the following imports are not directly used, they are stored in globals() and will be used implicitly. So DO NOT REMOVE THEM!!
-from deepwiki_cli.clients.huggingface_embedder_client import (
-    HuggingfaceClient,
-    HuggingfaceEmbedder,
-)
-from deepwiki_cli.clients.dashscope_client import DashScopeClient, DashScopeEmbedder
+from deepwiki_cli.clients import *
 from adalflow import GoogleGenAIClient
 from deepwiki_cli.logger.logging_config import get_tqdm_compatible_logger
 
@@ -38,12 +32,9 @@ def load_all_configs(cfg: DictConfig = None):
     global global_configs
     global_configs = all_configs
 
-
 def configs():
     if global_configs is None:
         raise ValueError("May use global_configs before loading all configs. Probably deepwiki_cli has incorrect initialization.")
-        # logger.warning("May use global_configs before loading all configs. Probably deepwiki_cli has incorrect initialization.")
-        # load_all_configs()
     return global_configs
 
 
@@ -73,23 +64,36 @@ def load_generator_config(configs: dict):
         configs["generator"]["provider"]
     ]
 
-
 def load_rag_config(configs: dict):
     # Process client classes
-
-    class_name = configs["rag"]["embedder"]["client_class"]
+    embedder_provider = configs["rag"]["embedder"]["provider"]
+    if embedder_provider == "dashscope":
+        embedder_class_name = "DashScopeEmbedder"
+        batch_embedder_class_name = "DashScopeBatchEmbedder"
+    elif embedder_provider == "huggingface":
+        embedder_class_name = "HuggingfaceEmbedder"
+        batch_embedder_class_name = "HuggingfaceBatchEmbedder"
+    else:
+        raise ValueError(f"Unknown provider: {embedder_provider}")
     assert (
-        class_name in globals()
-    ), f"load_rag_config: {class_name} not in globals()  {globals()}"
-    configs["rag"]["embedder"]["model_client"] = globals()[class_name]
+        batch_embedder_class_name in globals() and
+        embedder_class_name in globals()
+    ), f"load_rag_config: {batch_embedder_class_name} or {embedder_class_name} not in globals()  {globals()}"
+    configs["rag"]["embedder"]["model_client"] = globals()[embedder_class_name]
+    configs["rag"]["embedder"]["batch_model_client"] = globals()[batch_embedder_class_name]
     code_understanding_config = configs["rag"]["code_understanding"]
     # Get client class
-    client_class = code_understanding_config.get("client_class")
-
+    code_understanding_provider = code_understanding_config["provider"]
+    if code_understanding_provider == "dashscope":
+        class_name = "DashScopeClient"
+    elif code_understanding_provider == "huggingface":
+        class_name = "HuggingfaceClient"
+    else:
+        raise ValueError(f"Unknown provider: {code_understanding_provider}")
     # Map client class to actual class
-    model_client = globals().get(client_class)
+    model_client = globals().get(class_name)
     if not model_client:
-        raise ValueError(f"Unknown client class: {client_class}")
+        raise ValueError(f"Unknown client class: {class_name}")
 
     # Set model client
     code_understanding_config["model_client"] = model_client

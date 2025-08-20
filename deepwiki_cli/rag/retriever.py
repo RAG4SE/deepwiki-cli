@@ -2,16 +2,206 @@ import re
 from typing import List, Optional, Union, Dict, Any
 from rank_bm25 import BM25Okapi
 
-from adalflow.core.types import RetrieverOutput, Document
+from adalflow.core.types import RetrieverOutput, Document, RetrieverOutputType
+from adalflow.components.retriever.faiss_retriever import (
+    FAISSRetriever,
+    FAISSRetrieverQueriesType,
+)
 
 from deepwiki_cli.configs import get_embedder, configs
-from deepwiki_cli.rag.dual_vector import DualVectorDocument
-from deepwiki_cli.rag.dual_vector_pipeline import DualVectorRetriever
-from deepwiki_cli.rag.single_retriever import SingleVectorRetriever
+from deepwiki_cli.core.types import DualVectorDocument
 from deepwiki_cli.logger.logging_config import get_tqdm_compatible_logger
 
 logger = get_tqdm_compatible_logger(__name__)
 
+class SingleVectorRetriever(FAISSRetriever):
+    """A wrapper of FAISSRetriever with the additional feature of supporting docoments feature"""
+
+    def __init__(self, documents: List[Document], *args, **kwargs):
+        self.original_doc = documents
+        super().__init__(documents=documents, *args, **kwargs)
+        logger.info(
+            f"SingleVectorRetriever initialized with {len(documents)} documents"
+        )
+
+    def call(
+        self,
+        input: FAISSRetrieverQueriesType,
+    ) -> RetrieverOutputType:
+        retriever_output = super().call(input, self.top_k)
+
+        # Extract the first result from the list
+        if not retriever_output:
+            return []
+
+        first_output = retriever_output[0]
+
+        # Get the documents based on the indices
+        retrieved_docs = [self.original_doc[i] for i in first_output.doc_indices]
+
+        # Create a new RetrieverOutput with the documents
+        return [
+            RetrieverOutput(
+                doc_indices=first_output.doc_indices,
+                doc_scores=first_output.doc_scores,
+                query=first_output.query,
+                documents=retrieved_docs,
+            )
+        ]
+
+class DualVectorRetriever:
+    """Dual vector retriever: supports dual retrieval from code and summary vectors."""
+
+    def __init__(self, dual_docs: List[DualVectorDocument], embedder, top_k: int = 20):
+        """
+        Initializes the dual vector retriever.
+
+        Args:
+            dual_docs: A list of dual vector documents.
+            embedder: The embedder instance.
+            top_k: The number of most relevant documents to return.
+        """
+        self.dual_docs = dual_docs
+        self.embedder = embedder
+        self.top_k = top_k
+        self.doc_map = {doc.original_doc.id: doc for doc in dual_docs}
+
+        # Build the two FAISS indexes
+        self._build_indices()
+        logger.info(
+            f"Dual vector retriever initialization completed, containing {len(dual_docs)} documents"
+        )
+
+    def _build_indices(self):
+        """Builds the code index and the summary index."""
+        if not self.dual_docs:
+            logger.warning("No documents available for building indices")
+            self.code_retriever = None
+            self.understanding_retriever = None
+            return
+
+        # 1. Build the code index
+        code_docs = []
+        for dual_doc in self.dual_docs:
+            # Create a document object for FAISS
+            faiss_doc = Document(
+                text=dual_doc.original_doc.text,
+                meta_data=dual_doc.original_doc.meta_data,
+                id=f"{dual_doc.original_doc.id}_code",
+                vector=dual_doc.code_embedding,
+            )
+            code_docs.append(faiss_doc)
+
+        self.code_retriever = FAISSRetriever(
+            top_k=self.top_k,
+            embedder=self.embedder,
+            documents=code_docs,
+            document_map_func=lambda doc: doc.vector,
+        )
+        logger.info("Code FAISS index built successfully.")
+
+        # 2. Build the summary index
+        understanding_docs = []
+        for dual_doc in self.dual_docs:
+            faiss_doc = Document(
+                text=dual_doc.understanding_text,
+                meta_data=dual_doc.original_doc.meta_data,
+                id=f"{dual_doc.original_doc.id}_understanding",
+                vector=dual_doc.understanding_embedding,
+            )
+            understanding_docs.append(faiss_doc)
+
+        self.understanding_retriever = FAISSRetriever(
+            top_k=self.top_k,
+            embedder=self.embedder,
+            documents=understanding_docs,
+            document_map_func=lambda doc: doc.vector,
+        )
+        logger.info("Understanding FAISS index built successfully.")
+
+    def call(self, query_str: str) -> RetrieverOutputType:
+        """
+        Performs dual retrieval.
+
+        Args:
+            query_str: The query string.
+
+        Returns:
+            A RetrieverOutput object containing the retrieved documents and scores.
+        """
+        assert isinstance(
+            query_str, str
+        ), f"Query must be a string, got {type(query_str)}"
+
+        if not self.dual_docs:
+            return RetrieverOutput(
+                doc_indices=[], doc_scores=[], query=query_str, documents=[]
+            )
+
+        # 1. Retrieve from the code index
+        code_results = self.code_retriever.call(query_str, top_k=self.top_k)[0]
+        # 2. Retrieve from the summary index
+        understanding_results = self.understanding_retriever.call(
+            query_str, top_k=self.top_k
+        )[0]
+
+        # 3. Merge and re-rank the results
+        combined_scores = {}
+
+        # Process code results - extract original chunk_id from FAISS document ID
+        for i, score in zip(code_results.doc_indices, code_results.doc_scores):
+            # Get the document from code retriever to extract original chunk_id
+            doc_id = self.dual_docs[i].original_doc.id
+            original_chunk_id = doc_id.replace("_code", "")
+            combined_scores[original_chunk_id] = score
+
+        # Process understanding results - extract original chunk_id from FAISS document ID
+        for i, score in zip(
+            understanding_results.doc_indices, understanding_results.doc_scores
+        ):
+            # Get the document from understanding retriever to extract original chunk_id
+            doc_id = self.dual_docs[i].original_doc.id
+            original_chunk_id = doc_id.replace("_understanding", "")
+            if original_chunk_id not in combined_scores:
+                combined_scores[original_chunk_id] = score
+            else:
+                combined_scores[original_chunk_id] = max(
+                    combined_scores[original_chunk_id], score
+                )
+
+        # 4. Sort and get the top-k results
+        # Sort by the combined score in descending order
+        sorted_chunk_ids = sorted(
+            combined_scores.keys(),
+            key=lambda chunk_id: combined_scores[chunk_id],
+            reverse=True,
+        )
+
+        # 5. Retrieve the full documents for the top-k chunk_ids and create indices mapping
+        top_k_docs = []
+        doc_indices = []
+        doc_scores = []
+        for idx, chunk_id in enumerate(
+            sorted_chunk_ids[: min(self.top_k, len(sorted_chunk_ids))]
+        ):
+            if chunk_id in self.doc_map:
+                dual_doc = self.doc_map[chunk_id]
+                top_k_docs.append(dual_doc)
+                doc_indices.append(idx)
+                doc_scores.append(combined_scores[chunk_id])
+
+        logger.info(
+            f"Retrieved {len(top_k_docs)} documents after merging code and understanding search results."
+        )
+
+        return [
+            RetrieverOutput(
+                doc_indices=doc_indices,
+                doc_scores=doc_scores,
+                query=query_str,
+                documents=top_k_docs,
+            )
+        ]
 
 class HybridRetriever:
     """

@@ -618,10 +618,6 @@ class NaturalLanguageSplitter(TextSplitter):
 
         return chunks
 
-    def _extra_repr(self) -> str:
-        base_repr = super()._extra_repr()
-        return f"{base_repr}, smart_boundary_ratio={self.smart_boundary_ratio}"
-
     def call(self, documents: DocumentSplitterInputType) -> DocumentSplitterOutputType:
         """
         Process the splitting task on a list of documents in batch.

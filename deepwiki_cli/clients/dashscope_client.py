@@ -16,6 +16,7 @@ from typing import (
 import backoff
 from copy import deepcopy
 from tqdm import tqdm
+import adalflow as adal
 
 # optional import
 from adalflow.utils.lazy_import import safe_import, OptionalPackages
@@ -56,9 +57,6 @@ import adalflow.core.functional as F
 from adalflow.components.model_client.utils import parse_embedding_response
 
 from deepwiki_cli.logger.logging_config import get_tqdm_compatible_logger
-
-# # Disable tqdm progress bars
-# os.environ["TQDM_DISABLE"] = "1"
 
 log = get_tqdm_compatible_logger(__name__)
 
@@ -462,8 +460,7 @@ class DashScopeClient(ModelClient):
                         )
                         final_data.append(
                             Embedding(
-                                embedding=[0.0]
-                                * embedding_dim,  # Use correct embedding dimension
+                                embedding=[0.0] * embedding_dim,  # Use correct embedding dimension
                                 index=i,
                             )
                         )
@@ -647,7 +644,7 @@ class DashScopeClient(ModelClient):
         self.async_client = None  # It will be lazily initialized when acall is used
 
 
-class DashScopeEmbedder(DataComponent):
+class DashScopeEmbedder(adal.Embedder):
     r"""
     A user-facing component that orchestrates an embedder model via the DashScope model client and output processors.
 
@@ -658,8 +655,6 @@ class DashScopeEmbedder(DataComponent):
     """
 
     model_type: ModelType = ModelType.EMBEDDER
-    model_client: ModelClient
-    output_processors: Optional[DataComponent]
 
     def __init__(
         self,
@@ -668,14 +663,11 @@ class DashScopeEmbedder(DataComponent):
         output_processors: Optional[DataComponent] = None,
     ) -> None:
 
-        super().__init__(model_kwargs=model_kwargs)
+        super().__init__(model_client=DashScopeClient(), model_kwargs=model_kwargs, output_processors=output_processors)
         if not isinstance(model_kwargs, Dict):
             raise TypeError(
                 f"clients/dashscope_client.py:{type(self).__name__} requires a dictionary for model_kwargs, not a string"
             )
-        self.model_kwargs = model_kwargs.copy()
-        self.model_client = DashScopeClient()
-        self.output_processors = output_processors
 
     def call(
         self,
@@ -725,13 +717,11 @@ class DashScopeEmbedder(DataComponent):
 
 
 # Batch Embedding Components for DashScope
-class DashScopeBatchEmbedder(DataComponent):
+class DashScopeBatchEmbedder(adal.BatchEmbedder):
     """Batch embedder specifically designed for DashScope API"""
 
     def __init__(self, embedder, batch_size: int = 100) -> None:
-        super().__init__(batch_size=batch_size)
-        self.embedder = embedder
-        self.batch_size = batch_size
+        super().__init__(embedder=embedder, batch_size=batch_size)
         if self.batch_size > 10:
             log.warning(
                 f"DashScope batch embedder initialization, batch size: {self.batch_size}, note that DashScope batch embedding size cannot exceed 25, automatically set to 10"
@@ -771,7 +761,6 @@ class DashScopeBatchEmbedder(DataComponent):
             batch_input = input[i : min(i + self.batch_size, n)]
 
             try:
-                # Use correct calling method: directly call embedder instance
                 batch_output = self.embedder(
                     input=batch_input, model_kwargs=model_kwargs
                 )
@@ -814,107 +803,3 @@ class DashScopeBatchEmbedder(DataComponent):
         Call operator interface, delegates to call method
         """
         return self.call(input=input, model_kwargs=model_kwargs)
-
-
-class DashScopeToEmbeddings(DataComponent):
-    """Component that converts document sequences to embedding vector sequences, specifically optimized for DashScope API"""
-
-    def __init__(self, embedder, batch_size: int = 100) -> None:
-        super().__init__(batch_size=batch_size)
-        self.embedder = embedder
-        self.batch_size = batch_size
-        self.batch_embedder = DashScopeBatchEmbedder(
-            embedder=embedder, batch_size=batch_size
-        )
-
-    def __call__(self, input: List[Document]) -> List[Document]:
-        """
-        Process list of documents, generating embedding vectors for each document
-
-        Args:
-            input: List of input documents
-
-        Returns:
-            List of documents containing embedding vectors
-        """
-        output = deepcopy(input)
-
-        # Convert to text list
-        embedder_input: List[str] = [chunk.text for chunk in output]
-
-        log.info(f"Starting to process embeddings for {len(embedder_input)} documents")
-
-        # Batch process embeddings
-        outputs: List[EmbedderOutput] = self.batch_embedder(input=embedder_input)
-
-        # Validate output
-        total_embeddings = 0
-        error_batches = 0
-
-        for batch_output in outputs:
-            if batch_output.error:
-                error_batches += 1
-                log.error(f"Found error batch: {batch_output.error}")
-            elif batch_output.data:
-                total_embeddings += len(batch_output.data)
-
-        log.info(
-            f"Embedding statistics: total {total_embeddings} valid embeddings, {error_batches} error batches"
-        )
-
-        # Assign embedding vectors back to documents
-        doc_idx = 0
-        for batch_idx, batch_output in tqdm(
-            enumerate(outputs),
-            desc="Assigning embedding vectors to documents",
-            disable=False,
-        ):
-            if batch_output.error:
-                # Create empty vectors for documents in error batches
-                batch_size_actual = min(self.batch_size, len(output) - doc_idx)
-                log.warning(
-                    f"Creating empty vectors for {batch_size_actual} documents in batch {batch_idx}"
-                )
-
-                for i in range(batch_size_actual):
-                    if doc_idx < len(output):
-                        output[doc_idx].vector = []
-                        doc_idx += 1
-            else:
-                # Assign normal embedding vectors
-                for embedding in batch_output.data:
-                    if doc_idx < len(output):
-                        if hasattr(embedding, "embedding"):
-                            output[doc_idx].vector = embedding.embedding
-                        else:
-                            log.warning(
-                                f"Invalid embedding format for document {doc_idx}"
-                            )
-                            output[doc_idx].vector = []
-                        doc_idx += 1
-
-        # Validate results
-        valid_count = 0
-        empty_count = 0
-
-        for doc in output:
-            if hasattr(doc, "vector") and doc.vector and len(doc.vector) > 0:
-                valid_count += 1
-            else:
-                empty_count += 1
-
-        log.info(
-            f"Embedding results: {valid_count} valid vectors, {empty_count} empty vectors"
-        )
-
-        if valid_count == 0:
-            log.error("❌ All documents have empty embedding vectors!")
-        elif empty_count > 0:
-            log.warning(f"⚠️ Found {empty_count} empty embedding vectors")
-        else:
-            log.info("✅ All documents successfully generated embedding vectors")
-
-        return output
-
-    def _extra_repr(self) -> str:
-        return f"batch_size={self.batch_size}"

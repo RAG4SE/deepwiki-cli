@@ -1,6 +1,6 @@
 repo:
   file_filters:
-    excluded_dirs:
+    excluded_patterns:
       - "*/.venv/*"
       - "*/env/*"
       - "*/virtualenv/*"
@@ -20,7 +20,6 @@ repo:
       - "*/htmlcov/*"
       - "*/bin*/*"
       - "*/out*/*"
-    excluded_files:
       - "*yarn.lock"
       - "*pnpm-lock.yaml"
       - "*npm-shrinkwrap.json"
@@ -111,8 +110,7 @@ repo:
       - "*.nyc_output"
       - "*.tox"
       - "*output"
-    included_dirs: []
-    included_files: []
+    extra_excluded_patterns: []
 
   repository:
     max_size_mb: 50000

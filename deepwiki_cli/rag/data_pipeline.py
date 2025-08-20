@@ -11,17 +11,11 @@ from adalflow.core.db import LocalDB
 from adalflow.components.data_process import TextSplitter
 
 from deepwiki_cli.logger.logging_config import get_tqdm_compatible_logger
-from deepwiki_cli.clients.huggingface_embedder_client import (
-    HuggingfaceClientToEmbeddings,
-)
-from deepwiki_cli.clients.dashscope_client import DashScopeToEmbeddings
-from deepwiki_cli.rag.dual_vector_pipeline import DualVectorDocument
-from deepwiki_cli.rag.dual_vector_pipeline import (
-    DualVectorToEmbeddings,
-    CodeUnderstandingGenerator,
-)
+from deepwiki_cli.rag.embedding import DashScopeToEmbeddings, HuggingfaceToEmbeddings, DualVectorToEmbeddings
+from deepwiki_cli.core.types import DualVectorDocument
+from deepwiki_cli.rag.code_understanding import CodeUnderstandingGenerator
 from deepwiki_cli.rag.dynamic_splitter_transformer import DynamicSplitterTransformer
-from deepwiki_cli.configs import get_embedder, configs
+from deepwiki_cli.configs import get_batch_embedder, configs
 
 # The setting is from the observation that the maximum length of Solidity compiler's files is 919974
 MAX_EMBEDDING_LENGTH = 1000000
@@ -220,46 +214,15 @@ def read_all_documents(path: str):
         list: A list of Document objects with metadata.
     """
     documents = []
-    included_dirs = configs()["repo"]["file_filters"]["included_dirs"]
-    included_files = configs()["repo"]["file_filters"]["included_files"]
-    excluded_dirs = configs()["repo"]["file_filters"]["excluded_dirs"]
-    excluded_files = configs()["repo"]["file_filters"]["excluded_files"]
+    excluded_patterns = list(set(configs()["repo"]["file_filters"]["excluded_patterns"] + configs()["repo"]["file_filters"]["extra_excluded_patterns"]))
     code_extensions = configs()["repo"]["file_extensions"]["code_extensions"]
     doc_extensions = configs()["repo"]["file_extensions"]["doc_extensions"]
 
-    # Determine filtering mode: inclusion or exclusion
-    use_inclusion_mode = (included_dirs is not None and len(included_dirs) > 0) or (
-        included_files is not None and len(included_files) > 0
-    )
-
-    if use_inclusion_mode:
-        # Inclusion mode: only process specified directories and files
-        final_included_dirs = set(included_dirs) if included_dirs else set()
-        final_included_files = set(included_files) if included_files else set()
-
-        logger.info(f"Using inclusion mode")
-        logger.info(f"Included directories: {list(final_included_dirs)}")
-        logger.info(f"Included files: {list(final_included_files)}")
-
-        # Convert to lists for processing
-        included_dirs = list(final_included_dirs)
-        included_files = list(final_included_files)
-        excluded_dirs = []
-        excluded_files = []
-    else:
-
-        included_dirs = []
-        included_files = []
-
-    logger.info(f"Reading documents from {path}, use_inclusion_mode: {use_inclusion_mode}")
+    logger.info(f"Reading documents from {path}")
 
     def should_process_file(
         file_path: str,
-        use_inclusion: bool,
-        included_dirs: List[str],
-        included_files: List[str],
-        excluded_dirs: List[str],
-        excluded_files: List[str],
+        excluded_patterns: List[str],
     ) -> bool:
         """
         Determine if a file should be processed based on inclusion/exclusion rules.
@@ -267,11 +230,8 @@ def read_all_documents(path: str):
 
         Args:
             file_path (str): The file path to check
-            use_inclusion (bool): Whether to use inclusion mode
-            included_dirs (List[str]): List of directories to include (supports glob patterns)
-            included_files (List[str]): List of files to include (supports glob patterns)
-            excluded_dirs (List[str]): List of directories to exclude (supports glob patterns)
-            excluded_files (List[str]): List of files to exclude (supports glob patterns)
+            excluded_patterns (List[str]): List of patterns to exclude (supports glob patterns)
+            extra_exclude_patterns (List[str]): List of extra patterns to exclude (supports glob patterns)
 
         Returns:
             bool: True if the file should be processed, False otherwise
@@ -287,53 +247,12 @@ def read_all_documents(path: str):
 
             return False
 
-        if use_inclusion:
-            # Inclusion mode: file must be in included directories or match included files
-            is_included = False
-
-            # Check if file is in an included directory
-            if included_dirs:
-                for included in included_dirs:
-                    if matches_pattern(normalized_path, included):
-                        is_included = True
-                        break
-
-            # Check if file matches included file patterns
-            if not is_included and included_files:
-                for included_file in included_files:
-                    if matches_pattern(file_name, included_file) or matches_pattern(normalized_path, included_file):
-                        is_included = True
-                        break
-
-            # If no inclusion rules are specified for a category, allow all files from that category
-            if not included_dirs and not included_files:
-                is_included = True
-            elif not included_dirs and included_files:
-                # Only file patterns specified, allow all directories
-                pass  # is_included is already set based on file patterns
-            elif included_dirs and not included_files:
-                # Only directory patterns specified, allow all files in included directories
-                pass  # is_included is already set based on directory patterns
-
-            return is_included
-        else:
-            # Exclusion mode: file must not be in excluded directories or match excluded files
-            is_excluded = False
-
-            # Check if file is in an excluded directory
-            for excluded in excluded_dirs:
-                if matches_pattern(normalized_path, excluded):
-                    is_excluded = True
-                    break
-
-            # Check if file matches excluded file patterns
-            if not is_excluded:
-                for excluded_file in excluded_files:
-                    if matches_pattern(file_name, excluded_file) or matches_pattern(normalized_path, excluded_file):
-                        is_excluded = True
-                        break
+        # Check if file is in an excluded directory
+        for excluded_pattern in excluded_patterns:
+            if matches_pattern(normalized_path, excluded_pattern):
+                return False
             
-            return not is_excluded
+        return True
 
     # Process code files first
     for ext in code_extensions:
@@ -342,11 +261,7 @@ def read_all_documents(path: str):
             # Check if file should be processed based on inclusion/exclusion rules
             if not should_process_file(
                 file_path,
-                use_inclusion_mode,
-                included_dirs,
-                included_files,
-                excluded_dirs,
-                excluded_files,
+                excluded_patterns,
             ):
                 continue
 
@@ -405,11 +320,7 @@ def read_all_documents(path: str):
             # Check if file should be processed based on inclusion/exclusion rules
             if not should_process_file(
                 file_path,
-                use_inclusion_mode,
-                included_dirs,
-                included_files,
-                excluded_dirs,
-                excluded_files,
+                excluded_patterns,
             ):
                 continue
 
@@ -475,12 +386,12 @@ def prepare_data_transformer() -> adal.Sequential:
 
     if configs()["rag"]["dynamic_splitter"]["enabled"]:
         # Use dynamic splitter that automatically selects appropriate splitter
-        splitter = DynamicSplitterTransformer()
+        splitter = DynamicSplitterTransformer(batch_size=configs()["rag"]["dynamic_splitter"]["batch_size"])
     else:
         splitter = TextSplitter(**configs()["rag"]["text_splitter"])
 
     embedder_model_config = configs()["rag"]["embedder"]["model_kwargs"]
-    embedder = get_embedder()
+    embedder = get_batch_embedder()
     if use_dual_vector:
         code_understanding_generator = CodeUnderstandingGenerator(
             **code_understanding_config
@@ -489,22 +400,21 @@ def prepare_data_transformer() -> adal.Sequential:
             embedder=embedder, generator=code_understanding_generator
         )
         logger.info("Using DualVectorToEmbeddings transformer.")
-    elif embedder.__class__.__name__ == "HuggingfaceEmbedder":
+    elif embedder.__class__.__name__ == "HuggingfaceBatchEmbedder" or embedder.__class__.__name__ == "HuggingfaceEmbedder":
         # HuggingFace can use larger batch sizes
-        batch_size = embedder_model_config["batch_size"]
-        embedder_transformer = HuggingfaceClientToEmbeddings(
-            embedder=embedder,
-            batch_size=batch_size,
+        # batch_size = embedder_model_config["batch_size"]
+        embedder_transformer = HuggingfaceToEmbeddings(
+            embedder=embedder
         )
-        logger.info(f"Using HuggingFace embedder with batch size: {batch_size}")
-    elif embedder.__class__.__name__ == "DashScopeEmbedder":
+        logger.info(f"Using HuggingFace embedder")
+    elif embedder.__class__.__name__ == "DashScopeBatchEmbedder" or embedder.__class__.__name__ == "DashScopeEmbedder":
         # DashScope API limits batch size to maximum of 10
-        batch_size = min(embedder_model_config["batch_size"], 10)
+        # batch_size = embedder_model_config["batch_size"]
         embedder_transformer = DashScopeToEmbeddings(
-            embedder=embedder, batch_size=batch_size
+            embedder=embedder
         )
         logger.info(
-            f"Using DashScope specialized embedder with batch size: {batch_size} (API limit: ≤10)"
+            f"Using DashScope specialized embedder"
         )
     else:
         raise ValueError(f"Unknown embedder type: {embedder.__class__.__name__}")
@@ -596,7 +506,7 @@ class DatabaseManager:
         if self.use_bm25:
             file_name += "-bm25"
         file_name = file_name.replace("/", "#")
-        embedding_provider = configs()["rag"]["embedder"]["client_class"]
+        embedding_provider = configs()["rag"]["embedder"]["provider"]
         embedding_model = configs()["rag"]["embedder"]["model"]
         file_name += f"-{embedding_provider}-{embedding_model}".replace("/", "#")
         return file_name

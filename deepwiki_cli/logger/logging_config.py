@@ -1,6 +1,7 @@
 import logging
 import os
 from pathlib import Path
+from tqdm import tqdm
 
 # Silence adalflow logging
 logging.getLogger("adalflow").setLevel(logging.CRITICAL)
@@ -144,8 +145,6 @@ class TqdmCompatibleLogger(logging.Logger):
 
             # Try to use tqdm.write() if tqdm is available and active
             try:
-                from tqdm import tqdm
-
                 # Use tqdm.write() to avoid interfering with progress bars
                 tqdm.write(formatted_message)
             except (ImportError, AttributeError):

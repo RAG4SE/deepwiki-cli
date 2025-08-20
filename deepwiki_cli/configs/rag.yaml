@@ -1,13 +1,13 @@
 rag:
   embedder:
-    client_class: DashScopeEmbedder
-    # client_class: HuggingfaceEmbedder
+    provider: dashscope
+    # provider: huggingface
     model: text-embedding-v4
     # model: intfloat/multilingual-e5-large-instruct
     model_kwargs:
       dimensions: 256
       encoding_format: float
-      batch_size: 10
+    batch_size: 10
 
     sketch_filling: true
     force_embedding: false
@@ -29,7 +29,10 @@ rag:
 
   # Dynamic splitter configuration - automatically selects appropriate splitter
   dynamic_splitter:
-    enabled: true
+    enabled: false
+    # If batch_size is None, use all available CPU cores. Otherwise, use the specified batch size.
+    # Each batch will be processed in parallel.
+    batch_size: null
     # Text splitter configuration for natural language documents
     natural_language_splitter:
       split_by: word
@@ -43,7 +46,6 @@ rag:
 
   code_understanding:
     provider: dashscope
-    client_class: DashScopeClient
     model: qwen3-8b
     model_kwargs:
       temperature: 0.7
