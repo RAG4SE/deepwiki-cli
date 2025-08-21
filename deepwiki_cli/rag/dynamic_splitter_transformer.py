@@ -76,65 +76,6 @@ class DynamicSplitterTransformer(Component):
             result_documents.extend(self._process_batch(batch_documents))
         return result_documents
 
-        # Step 1: Group documents by splitter type
-        splitter_groups = (
-            {}
-        )  # key: splitter_key, value: {'splitter': splitter, 'docs': [docs]}
-
-        for doc in tqdm(documents, desc="Grouping documents by splitter type"):
-            try:
-                # Get appropriate splitter for this document
-                file_path = getattr(doc, "meta_data", {}).get("file_path", "")
-                splitter = self.splitter_factory.get_splitter(
-                    content=doc.text,
-                    file_path=file_path,
-                )
-
-                # Create splitter key
-                splitter_key = splitter.get_key()
-
-                # Group documents by splitter
-                if splitter_key not in splitter_groups:
-                    splitter_groups[splitter_key] = {
-                        "splitter": splitter,
-                        "docs": [],
-                    }
-
-                splitter_groups[splitter_key]["docs"].append(doc)
-
-            except Exception as e:
-                logger.error(
-                    f"Error analyzing document {getattr(doc, 'meta_data', {}).get('file_path', 'unknown')}: {e}"
-                )
-                raise
-
-        # Step 2: Process each splitter group in batch
-        result_documents = []
-        logger.info(f"Found {len(splitter_groups)} unique splitter configurations")
-
-        for splitter_key, group_info in splitter_groups.items():
-            logger.info(f"Processing splitter group {splitter_key}")
-            splitter = group_info["splitter"]
-            docs = group_info["docs"]
-
-            try:
-                # Batch split all documents for this splitter
-                split_docs = splitter.call(docs)
-                result_documents.extend(split_docs)
-
-            except Exception as e:
-                # Skip this unsplittable document
-                logger.warning(
-                    f"Error processing splitter group {splitter_key}: {e}"
-                )
-                continue
-
-        logger.info(
-            f"Processed {len(documents)} documents into {len(result_documents)} chunks using {len(splitter_groups)} splitter groups"
-        )
-
-        return result_documents
-
     def __call__(self, documents: List[Document]) -> List[Document]:
         """Make the transformer callable.
 

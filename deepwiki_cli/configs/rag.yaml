@@ -7,7 +7,7 @@ rag:
     model_kwargs:
       dimensions: 256
       encoding_format: float
-    batch_size: 10
+    batch_size: 10 # Since the qps of dashscope is 10, we need to set the batch size to 10 at most
 
     sketch_filling: true
     force_embedding: false
@@ -47,6 +47,7 @@ rag:
   code_understanding:
     provider: dashscope
     model: qwen3-8b
+    batch_size: 10
     model_kwargs:
       temperature: 0.7
       top_p: 0.8

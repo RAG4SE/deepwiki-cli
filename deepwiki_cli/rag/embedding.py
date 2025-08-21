@@ -1,6 +1,7 @@
-from typing import List
+from typing import List, Literal
 from copy import deepcopy
 from tqdm import tqdm
+import asyncio
 
 import adalflow as adal
 from adalflow.core.types import Document, EmbedderOutput
@@ -9,7 +10,7 @@ from adalflow.core.component import DataComponent
 from deepwiki_cli.logger.logging_config import get_tqdm_compatible_logger
 from deepwiki_cli.rag.code_understanding import CodeUnderstandingGenerator
 from deepwiki_cli.core.types import DualVectorDocument
-
+from deepwiki_cli.core.utils import AsyncWrapper
 
 logger = get_tqdm_compatible_logger(__name__)
 
@@ -20,7 +21,7 @@ class ToEmbeddings(DataComponent):
         super().__init__()
         self.embedder = embedder
 
-    def __call__(self, input: List[Document]) -> List[Document]:
+    def call(self, input: List[Document]) -> List[Document]:
         """
         Process list of documents, generating embedding vectors for each document
 
@@ -66,6 +67,9 @@ class ToEmbeddings(DataComponent):
             raise ValueError(f"Unsupported embedder type: {type(self.embedder)}")
         return output
 
+    async def acall(self, input: List[Document]) -> List[Document]:
+        return self.call(input)
+
 class DashScopeToEmbeddings(ToEmbeddings):
     """Component that converts document sequences to embedding vector sequences, specifically optimized for DashScope API"""
 
@@ -73,8 +77,8 @@ class DashScopeToEmbeddings(ToEmbeddings):
         super().__init__(embedder)
         self.embedder = embedder
 
-    def __call__(self, input: List[Document]) -> List[Document]:
-        return super().__call__(input)
+    def call(self, input: List[Document]) -> List[Document]:
+        return super().call(input)
 
 class HuggingfaceToEmbeddings(ToEmbeddings):
     """Component that converts document sequences to embedding vector sequences, specifically optimized for Huggingface API"""
@@ -83,9 +87,9 @@ class HuggingfaceToEmbeddings(ToEmbeddings):
         super().__init__(embedder)
         self.embedder = embedder
 
-    def __call__(self, input: List[Document]) -> List[Document]:
-        return super().__call__(input)
-
+    def call(self, input: List[Document]) -> List[Document]:
+        return super().call(input)
+    
 
 class DualVectorToEmbeddings(ToEmbeddings):
     """
@@ -104,36 +108,24 @@ class DualVectorToEmbeddings(ToEmbeddings):
         super().__init__(embedder=embedder)
         self.code_generator = generator
 
-    def __call__(self, documents: List[Document]) -> List[DualVectorDocument]:
+
+    def call(self, documents: List[Document]) -> List[DualVectorDocument]:
         """
         Processes a list of documents to generate and cache dual-vector embeddings.
         """
         logger.info(
             "Generating dual-vector embeddings for %s documents", len(documents)
         )
-        output = super().__call__(documents)
+        output = super().call(documents)
         code_vectors = [doc.vector for doc in output]
         assert len(code_vectors) == len(documents), "The number of code vectors should be the same as the number of documents"
+
+        understanding_texts = asyncio.run(self.code_generator.batch_call(
+            [doc.text for doc in documents],
+            [doc.meta_data.get("file_path") for doc in documents]
+        ))
         
-        understanding_texts = []
-        
-        for idx, doc in enumerate(
-            tqdm(
-                documents,
-                desc="Generating code understanding",
-                disable=False,
-                total=len(documents),
-            )
-        ):
-            assert (
-                "is_code" in doc.meta_data
-            ), f"rag/dual_vector_pipeline.py:No `is_code` key in meta_data: {doc.meta_data}"
-            understanding_text = self.code_generator.generate_code_understanding(
-                doc.text, doc.meta_data.get("file_path")
-            )
-            understanding_texts.append(understanding_text)
-        
-        summary_vectors = super().__call__([Document(text=text) for text in understanding_texts])
+        summary_vectors = super().call([Document(text=text) for text in understanding_texts])
         summary_vectors = [doc.vector for doc in summary_vectors]
         assert len(summary_vectors) == len(code_vectors), f"The number of summary vectors ({len(summary_vectors)}) should be the same as the number of code vectors ({len(code_vectors)})"
         

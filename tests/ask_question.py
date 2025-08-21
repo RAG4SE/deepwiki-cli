@@ -47,16 +47,32 @@ async def main():
     end_time = time.time()
 
     # 格式化显示结果
-    print(f"\n🎉 所有问题处理完成，耗时: {end_time - start_time:.2f}秒")
+    print(f"\n🎉 asyncio.gather: 所有问题处理完成，耗时: {end_time - start_time:.2f}秒")
     print("=" * 60)
 
-    for result in results:
-        print(f"\n📋 问题 {result['index']}: {result['question']}")
-        if "answer" in result:
-            print(f"💬 回答: {result['answer']}")
-        else:
-            print(f"❌ 错误: {result['error']}")
-        print("-" * 40)
+    start_time = time.time()
+    for i, q in enumerate(questions):
+        await ask_question(q, i)
+    end_time = time.time()
+    print(f"🎉 for + await: 所有问题处理完成，耗时: {end_time - start_time:.2f}秒")
+    print("=" * 60)
+
+    start_time = time.time()
+    for i, q in enumerate(questions):
+        # 异步函数被调用但从未被等待，导致协程对象被创建但从未执行, 会导致报错
+        ask_question(q, i)
+    end_time = time.time()
+    print(f"🎉 for + 所有问题处理完成，耗时: {end_time - start_time:.2f}秒")
+    print("=" * 60)
+
+
+    # for result in results:
+    #     print(f"\n📋 问题 {result['index']}: {result['question']}")
+    #     if "answer" in result:
+    #         print(f"💬 回答: {result['answer']}")
+    #     else:
+    #         print(f"❌ 错误: {result['error']}")
+    #     print("-" * 40)
 
 
 # 运行异步主函数
